@@ -85,7 +85,7 @@ graph TD
 - **처리**: JavaParser로 클래스/메서드 시그니처·어노테이션·호출관계·복잡도 추출 → SQLite 색인 적재 + `phase0.json` 기록.
 - **출력**: 해당 패키지의 시그니처 JSON (본문 제외).
 - **반환 스키마**: §6.1 참조.
-- **요구**: 메서드 **본문은 반환하지 않는다**(토큰 절약). 본문은 Phase 3d에서 별도 조회.
+- **요구**: 메서드 **본문은 반환하지 않는다**(토큰 절약). 본문은 Phase 3d에서 별도 조회한다(조회 수단은 §9 OQ-6 참조 — 현 `extract` 시그니처에는 본문 반환 경로가 없음).
 
 ### 3.3 FR-2 `verify` — 목차↔소스 매핑 검증
 - **입력**: `items`(목차 항목 배열, 각 항목은 `{title, mapped_source}`).
@@ -104,9 +104,10 @@ graph TD
 - **처리**: 색인에서 호출/의존 엣지 추출.
 - **출력**: 노드·엣지 목록(Mermaid 변환 직전 데이터).
 - **요구**: 코드 본문 대신 그래프 데이터만 제공. Phase 3c에서 **내용 작성(3d)보다 먼저** 호출되어 다이어그램 골격을 만든다.
+- **슬라이스 해석**: `slice` 입력은 §6.4 `slices.json`(Phase 2.5 **사람 교정이 반영된 최종본**)에서 멤버를 해석한다. 따라서 교정 결과가 `slices.json`에 영속화되어 있어야 한다(영속화 방식은 §9 OQ-8 참조).
 
 ### 3.6 FR-5 `check_approval` — 승인 게이트 확인
-- **입력**: `phase`(string, 예: `"phase0"`, `"phase3a"`).
+- **입력**: `phase`(string, 예: `"phase0"`, `"phase3b"`).
 - **처리**: `status.json`에서 해당 단계 상태 조회.
 - **출력**: `{phase, status: "pending"|"approved"|"rejected"}`.
 - **요구**: `approved`가 아니면 LLM은 다음 단계로 진행하지 않는다(§5 게이트 규칙).
@@ -116,6 +117,7 @@ graph TD
 - **처리**: 색인의 신호를 점수화하여 패키지 종류(kind)를 가로지르는 협력 묶음 후보를 산출. 신호 우선순위는 §6.5 참조. (1) `calls`/`dependencies` 직접 참조, (2) 명명 어간 공유, (3) 공유 도메인 타입.
 - **출력**: 슬라이스 후보 목록 → `slices.json` 기록. 각 슬라이스는 `{slice, members[], signal, cross_package, shared}`.
 - **요구**: **자동 후보만 산출**한다(결정론적 점수화). 최종 확정·교정은 Phase 2.5에서 사람이 수행한다. 다중 슬라이스에서 쓰이는 공통 클래스는 `shared:true`로 분리하고, 어디에도 안 묶이는 클래스는 "미분류"로 표기하여 데드코드 후보로 회부한다.
+- **단일 원본**: 산출된 `slices.json`은 Phase 2.5 사람 교정의 입력이자 교정 결과가 다시 기록되는 **슬라이스 정의의 단일 원본(source of truth)**이다. 후속 단계(`get_call_graph(slice)`, Phase 3a 목차의 슬라이스 단위 구성)는 이 교정본을 참조한다. 교정 결과의 영속화 방식은 §9 OQ-8 참조.
 
 ---
 
@@ -170,7 +172,8 @@ sequenceDiagram
 - LLM은 각 단계 **진입 직전 `check_approval`을 호출**한다.
 - 반환이 `approved`가 아니면 **진행 금지·대기**한다.
 - 임의 단계 건너뛰기 금지(이전 단계 `approved` 선행 조건).
-- 승인 단계키: `phase0`, `phase1`, `phase2`, `phase2_5`, `phase3a`, `phase3b`, `phase3c`, `phase3d`.
+- 승인 단계키: `phase0`, `phase1`, `phase2`, `phase2_5`, `phase3b`, `phase3c`, `phase3d`.
+- **Phase 3a(목차)는 독립 승인 게이트를 갖지 않는다.** 목차는 3a↔3b 반복으로 모든 매핑이 `✓`가 된 뒤 **`phase3b` 게이트에서 함께 승인**된다(미검증 목차의 단독 승인 방지). 가이드라인 §1 흐름도·§10 DoD와 일치.
 
 ---
 
@@ -212,7 +215,7 @@ sequenceDiagram
   "phase1":   "approved",
   "phase2":   "approved",
   "phase2_5": "pending",
-  "phase3a":  "pending",
+  "phase3b":  "pending",
   "updated_at": "2026-06-16T09:00:00Z"
 }
 ```
@@ -285,8 +288,11 @@ outputs/
 | OQ-3 | MCP 전송 | stdio(기본) / SSE | ax portal 경유 가능성 |
 | OQ-4 | 복잡도 임계값 | `min_complexity`, `min_loc` 구체값 | Phase 3a 투입량 |
 | OQ-5 | 슬라이스 신호 가중치 | 직접참조/명명/공유타입 점수 비율, `min_signal_score` | 슬라이스 후보 정밀도 |
+| OQ-6 | 메서드 본문 조회 방식 | (a) `extract` 확장(`class`/`method`/`include_body` 인자 추가) / (b) 별도 도구 `get_source` 신설 | Phase 3d 본문 조회 인터페이스. 현 `extract`는 본문 미반환(FR-1)이라 3d 실행 경로가 비어 있음 |
+| OQ-7 | L0/L1 자동 생성 주체 | (a) docgen-mcp 내장 생성기(FR 추가, `phase0.json`→`L0/L1.md` 투영) / (b) 별도 CLI 스크립트 | Phase 1/2 산출 책임 정의. 현 추적성표의 "(스크립트)"는 6개 도구·뷰어 어디에도 속하지 않음. NFR-2(빌드 0)·의존성 최소화 정합 |
+| OQ-8 | Phase 2.5 슬라이스 교정 영속화 | (a) 뷰어 편집 엔드포인트(`POST /slices`로 `slices.json` 갱신) / (b) `slices.json` 수동 편집 후 재적재 | 사람 교정이 `get_call_graph(slice)` 등 도구에 반영되는 경로. 현 뷰어는 `POST /approve`만 보유 |
 
-> **권장 기본값**: OQ-1=(a) JVM[타입 해석 필수], OQ-2=포함, OQ-3=stdio, OQ-4·OQ-5=프로젝트 분포 측정 후 결정.
+> **권장 기본값**: OQ-1=(a) JVM[타입 해석 필수], OQ-2=포함, OQ-3=stdio, OQ-4·OQ-5=프로젝트 분포 측정 후 결정, OQ-6=(a) `extract` 확장[도구 수 6개 유지], OQ-7=(a) 내장 생성기[단일 프로세스·의존성 0 유지], OQ-8=(a) 뷰어 엔드포인트[승인과 동일 채널로 일관].
 
 ---
 
@@ -298,9 +304,9 @@ outputs/
 | Phase 1 구조 | L0 | (스크립트) | `L0-structure.md` | `phase1` |
 | Phase 2 인덱스 | L1 | (스크립트) | `L1-components.md` | `phase2` |
 | Phase 2.5 슬라이스 | L1.5 | `cluster_features` | `slices.json`, `L1_5-slices.md` | `phase2_5` |
-| Phase 3a 목차 | — | `select_complex` | `toc.md` | `phase3a` |
+| Phase 3a 목차 | — | `select_complex` | `toc.md` | (phase3b로 통합) |
 | Phase 3b 매핑·검증 | — | `verify` | `mapping.json` | `phase3b` |
 | Phase 3c 다이어그램 | L3 | `get_call_graph` | `L3-<slice>.mermaid` | `phase3c` |
-| Phase 3d 내용 | L2 | `extract`(본문 조회) | `L2-<slice>.md` | `phase3d` |
+| Phase 3d 내용 | L2 | 본문 조회 도구(§9 OQ-6) | `L2-<slice>.md` | `phase3d` |
 
 > **순서 주의**: Phase 3은 목차(3a) → 매핑검증(3b) → **다이어그램(3c)** → 내용(3d) 순이다. 결정론적 산출물(매핑·그래프)을 해석적 산출물(내용)보다 먼저 확정하여, 내용 작성 시 검증된 다이어그램을 임베드하고 흐름 환각을 차단한다. 기존 "Phase 4 다이어그램"은 Phase 3c로 흡수되었다.

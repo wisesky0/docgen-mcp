@@ -25,19 +25,20 @@
 ```mermaid
 graph TD
     P0["Phase 0: 추출<br/>extract()"] --> G0{"승인?"}
-    G0 -->|approved| P1["Phase 1: L0 구조"]
+    G0 -->|approved| P1["Phase 1: L0 구조<br/>generate_index(L0)"]
     P1 --> G1{"승인?"}
-    G1 -->|approved| P2["Phase 2: L1 인덱스"]
+    G1 -->|approved| P2["Phase 2: L1 인덱스<br/>generate_index(L1)"]
     P2 --> G2{"승인?"}
-    G2 -->|approved| P25["Phase 2.5: L1.5 기능 슬라이스<br/>cluster_features()"]
+    G2 -->|approved| P25["Phase 2.5: L1.5 기능 슬라이스<br/>cluster_features() + 사람 교정"]
     P25 --> G25{"승인?"}
-    G25 -->|approved| P3a["Phase 3a: 목차<br/>select_complex()"]
-    P3a --> P3b["Phase 3b: 매핑 검증<br/>verify()"]
+    G25 -->|approved| P3a["Phase 3a: 목차 구조<br/>select_complex()"]
+    P3a --> G3a{"목차 구조<br/>승인?"}
+    G3a -->|approved| P3b["Phase 3b: 매핑 검증<br/>verify()"]
     P3b --> G3{"매핑 ✓?"}
     G3 -->|"✗ 환각/누락"| P3a
     G3 -->|"✓ + 승인"| P3c["Phase 3c: 다이어그램<br/>get_call_graph()"]
     P3c --> G3c{"승인?"}
-    G3c -->|approved| P3d["Phase 3d: 내용 작성<br/>(다이어그램 임베드)"]
+    G3c -->|approved| P3d["Phase 3d: 내용 작성<br/>extract(class, include_body=true)"]
     P3d --> G3d{"승인?"}
     G3d -->|approved| DONE["완료"]
 ```
@@ -45,15 +46,17 @@ graph TD
 | 단계 | 레벨 | LLM 역할 | 도구 | 토큰 수준 |
 |------|------|----------|------|:---:|
 | Phase 0 | — | 추출 트리거만 | `extract` | 0 |
-| Phase 1 | L0 | (스크립트 생성, LLM 검수) | — | 낮음 |
-| Phase 2 | L1 | (스크립트 생성, LLM 검수) | — | 낮음 |
-| Phase 2.5 | L1.5 | 슬라이스 후보 검토·교정 | `cluster_features` | 낮음 |
-| Phase 3a | — | 목차 작성(슬라이스 단위) | `select_complex` | 중간 |
+| Phase 1 | L0 | 자동 생성물 검수 | `generate_index("L0")` | 낮음 |
+| Phase 2 | L1 | 자동 생성물 검수 | `generate_index("L1")` | 낮음 |
+| Phase 2.5 | L1.5 | 슬라이스 후보 검토·교정 제안 | `cluster_features` | 낮음 |
+| Phase 3a | — | 목차 구조 작성(슬라이스 단위) | `select_complex` | 중간 |
 | Phase 3b | — | 매핑 표 작성·검증 | `verify` | 낮음 |
 | Phase 3c | L3 | 그래프→Mermaid 변환 | `get_call_graph` | 중간 |
-| Phase 3d | L2 | 의미 내용 작성 | 본문 조회 도구(요구사항 §9 OQ-6) | 높음 |
+| Phase 3d | L2 | 의미 내용 작성 | `extract(class, include_body=true)` | 높음 |
 
 > **순서 변경 핵심**: 다이어그램(3c)이 내용(3d)보다 **앞**이다. 결정론적 골격을 먼저 확정한 뒤, 내용 작성 시 그 다이어그램을 임베드하므로 흐름을 새로 추정하지 않는다. 기존 "Phase 4 다이어그램"은 3c로 흡수되었다.
+>
+> **3a/3b 분리 게이트**: Phase 3a는 "어떤 슬라이스·어떤 섹션을 문서화할지"(목차 구조)를 사람이 먼저 승인하는 단계이고, Phase 3b는 그 목차의 매핑이 실재 엔티티를 가리키는지 결정론적으로 검증하는 단계다. 매핑에서 환각(`exists:false`)이 발견되면 3a로 돌아가 목차를 수정·재승인 후 3b 재검증한다.
 
 ---
 
@@ -71,7 +74,7 @@ graph TD
 
 ## 3. Phase 1 / 2 — 구조·인덱스 (자동 생성 + 평가)
 
-L0(`L0-structure.md`)·L1(`L1-components.md`)은 **스크립트가 `phase0.json`에서 자동 생성**한다(결정론적 투영). LLM은 생성물의 **누락·오표기만 검수**하며, 전체 재작성은 금지한다.
+L0(`L0-structure.md`)·L1(`L1-components.md`)은 **`generate_index` 도구가 `phase0.json`에서 자동 생성**한다(결정론적 투영, FR-7). LLM은 `generate_index("L0")`/`generate_index("L1")`을 호출한 뒤 생성물의 **누락·오표기만 검수**하며, 전체 재작성은 금지한다.
 
 ### 3.1 구성 기준 (무엇으로 채우는가)
 
@@ -129,7 +132,7 @@ L0(`L0-structure.md`)·L1(`L1-components.md`)은 **스크립트가 `phase0.json`
 ### 4.1 수행
 1. `cluster_features()`로 슬라이스 후보(`slices.json`) 산출.
 2. 후보를 **슬라이스 매트릭스**로 정리(§4.4).
-3. 사람이 검토·교정(자동 신호가 못 잡는 도메인 묶음 추가/분리)한 결과를 `slices.json`(슬라이스 정의 단일 원본)에 반영한 뒤 **승인 요청·대기**(`phase2_5`). 교정 영속화 방식은 요구사항 §9 OQ-8 참조. 이후 `get_call_graph(slice)`는 이 교정본을 읽는다.
+3. 사람이 뷰어 Phase 2.5 탭의 편집 UI에서 검토·교정(자동 신호가 못 잡는 도메인 묶음 추가/분리)을 수행하면 `POST /slices`로 `slices.json`(슬라이스 정의 단일 원본)이 갱신된다. 교정 완료 후 **승인 요청·대기**(`phase2_5`). 이후 `get_call_graph(slice)`는 이 교정본을 읽는다.
 
 ### 4.2 슬라이스 식별 기준 (우선순위 신호)
 | 우선순위 | 신호 | 판정 | 주체 |
@@ -171,9 +174,10 @@ L0(`L0-structure.md`)·L1(`L1-components.md`)은 **스크립트가 `phase0.json`
 
 > **분리·순서 이유**: 목차 단계에서 항목↔소스 매핑을 강제해 실재 엔티티만 다루는지 검증하고, 다이어그램(결정론적 골격)을 내용(해석)보다 먼저 확정해 흐름 환각을 차단한다. 모든 작업은 **슬라이스 단위**로 수행한다.
 
-### 5.1 Phase 3a — 목차 생성
+### 5.1 Phase 3a — 목차 구조 생성·승인
 1. `select_complex({min_complexity, min_loc})`로 L2 대상 엔티티 목록 확보.
 2. **슬라이스 단위**로 목차(`toc.md`) 작성. **각 목차 항목에 매핑 소스를 함께 기재**한다.
+3. 작성 후 **승인 요청·대기**(`phase3a`). 사용자는 "어떤 슬라이스·어떤 섹션을 문서화할지"(범위·구조)를 매핑 검증과 별개로 먼저 확정한다.
 
 목차 항목 형식:
 ```markdown
@@ -181,8 +185,10 @@ L0(`L0-structure.md`)·L1(`L1-components.md`)은 **스크립트가 `phase0.json`
 - {문서 항목 제목}  → 매핑: {FQCN 또는 Class.method}
 ```
 
+> **3a 게이트가 보는 것**: 범위 적정성(누락 슬라이스/과다 항목), 슬라이스 단위 그룹핑 적절성, 항목 제목의 명확성. 매핑 정확성은 3b의 책임이므로 3a에서는 검증하지 않는다.
+
 ### 5.2 Phase 3b — 소스 매핑 검증
-1. 목차의 모든 `(제목, 매핑소스)`를 `verify(items[])`에 전달.
+1. `phase3a` 승인 확인 후 시작. 목차의 모든 `(제목, 매핑소스)`를 `verify(items[])`에 전달.
 2. 반환된 `mapping.json`을 검토하여 매핑 표 작성:
 
 | 문서 항목 | 매핑 소스 | 존재 | 조치 |
@@ -191,7 +197,7 @@ L0(`L0-structure.md`)·L1(`L1-components.md`)은 **스크립트가 `phase0.json`
 | 재고 차감 | `StockService.deduct` | ✗ | **제거**(환각) |
 
 3. **검증 규칙**:
-   - `exists:false` 항목은 목차에서 제거하거나 올바른 소스로 수정 → Phase 3a로 되돌아감.
+   - `exists:false` 항목은 목차에서 제거하거나 올바른 소스로 수정 → Phase 3a로 되돌아간다(`phase3a`를 `pending`으로 되돌리고 재승인 요청).
    - 모든 항목이 `✓`가 될 때까지 3a↔3b 반복.
    - 통과 후 **승인 요청·대기**(`phase3b`).
 
@@ -210,7 +216,7 @@ L0(`L0-structure.md`)·L1(`L1-components.md`)은 **스크립트가 `phase0.json`
 > 다이어그램을 먼저 만들면 3d 내용 작성 시 "코드가 이렇게 흐른다"고 새로 추정하지 않고, **검증된 그림이 보여주는 것을 서술**한다.
 
 ### 5.4 Phase 3d — 내용 작성
-1. 승인된 목차 항목에 한해, 해당 클래스 **본문을 본문 조회 도구로 개별 조회**(전체가 아닌 확정분만). 현 `extract`는 본문을 반환하지 않으므로 본문 조회 수단(요구사항 §9 OQ-6)이 선행 확정되어야 한다.
+1. 승인된 목차 항목에 한해, `extract(class=<FQCN>, method=<선택>, include_body=true)`로 **개별 조회**한다(전체가 아닌 확정분만). `include_body=true` 호출에는 `class` 인자가 필수다.
 2. **슬라이스 단위**로 `L2-<slice>.md` 작성. §6 템플릿 준수. "핵심 흐름"에는 3c에서 만든 `L3-<slice>.mermaid`를 임베드한다.
 3. 작성 후 승인 요청·대기(`phase3d`).
 
@@ -280,6 +286,7 @@ L0(`L0-structure.md`)·L1(`L1-components.md`)은 **스크립트가 `phase0.json`
 | 어노테이션 추정으로 동작 단정 | 시그니처·어노테이션이 뒷받침하는 범위로 제한 표기 |
 | 호출 관계 임의 추정 | `get_call_graph` 데이터에 근거한 엣지만 표기 |
 | 슬라이스 자의적 묶음 | `cluster_features` 후보 + 사람 승인에 근거 |
+| 목차 구조 미승인 매핑 검증 | Phase 3a 승인 후에만 Phase 3b의 `verify` 수행 |
 | 매핑 미검증 내용 작성 | Phase 3b 통과 후에만 Phase 3d 수행 |
 | 다이어그램 없이 흐름 서술 | Phase 3c 완료 후 그 그림을 서술 |
 
@@ -292,7 +299,8 @@ L0(`L0-structure.md`)·L1(`L1-components.md`)은 **스크립트가 `phase0.json`
 | Phase 0 | `phase0.json`·색인 생성 + `phase0` 승인 |
 | Phase 1/2 | L0/L1 §3.2 평가 기준(기계+사람) 통과 + 각 승인 |
 | Phase 2.5 | 슬라이스 매트릭스 사람 교정 완료 + `phase2_5` 승인 |
-| Phase 3a/b | 매핑 표 전 항목 `✓` + `phase3b` 승인 |
+| Phase 3a | 슬라이스 단위 목차(`toc.md`) 작성 + `phase3a` 승인(범위·구조 확정) |
+| Phase 3b | 매핑 표 전 항목 `✓` + `phase3b` 승인 |
 | Phase 3c | 슬라이스별 L3 다이어그램 + `phase3c` 승인 |
 | Phase 3d | 슬라이스별 L2 문서(다이어그램 임베드) + `phase3d` 승인 |
 | 전체 | 모든 단계 `approved` |
